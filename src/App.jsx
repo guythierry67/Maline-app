@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { getData, setData, subscribeToChanges } from "./lib/supabase";
 import {
   FileText, Truck, ClipboardList, Undo2, Users, Package, Settings as SettingsIcon,
-  Plus, ArrowLeft, Search, Trash2, X, Printer, Share2, Check, ChevronRight,
+  Plus, ArrowLeft, ArrowRightCircle, Search, Trash2, X, Printer, Share2, Check, ChevronRight,
   Building2, Phone, Mail, MapPin, Percent, Wallet, CircleDollarSign, Save
 } from "lucide-react";
 
@@ -205,6 +205,29 @@ export default function App() {
     setDocuments((docs) => docs.map((d) => (d.id === id ? { ...d, ...patch } : d)));
   }
 
+  function convertDocument(sourceDoc, targetType) {
+    const num = settings.numbering[targetType] || 1;
+    const today = new Date().toISOString().slice(0, 10);
+    const newDoc = {
+      ...sourceDoc,
+      id: genId(),
+      type: targetType,
+      number: num,
+      date: today,
+      dueDate: addDays(today, 30),
+      paymentStatus: "unpaid",
+      paidAmount: 0,
+      convertedFromId: sourceDoc.id,
+      convertedFromType: sourceDoc.type,
+      convertedFromNumber: sourceDoc.number,
+      createdAt: Date.now(),
+    };
+    setDocuments((d) => [newDoc, ...d]);
+    setSettings((s) => ({ ...s, numbering: { ...s.numbering, [targetType]: num + 1 } }));
+    updateDocument(sourceDoc.id, { convertedToId: newDoc.id });
+    setScreen({ name: "editor", docType: targetType, id: newDoc.id });
+  }
+
   function deleteDocument(id) {
     setDocuments((docs) => docs.filter((d) => d.id !== id));
   }
@@ -294,6 +317,7 @@ export default function App() {
             onBack={() => setScreen({ name: "list", docType: screen.docType })}
             onPreview={(doc) => setPreviewDoc(doc)}
             onAddClient={() => setEditingClient({})}
+            onConvert={(sourceDoc, targetType) => convertDocument(sourceDoc, targetType)}
           />
         )}
 
@@ -586,7 +610,7 @@ function TopBar({ title, left, right }) {
 }
 
 /* -------------------------------- DOC EDITOR -------------------------------- */
-function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBack, onPreview, onAddClient }) {
+function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBack, onPreview, onAddClient, onConvert }) {
   if (!doc) return null;
   const meta = DOC_META[doc.type];
   const totals = computeTotals(doc);
@@ -615,9 +639,33 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
             <h1 style={{ fontFamily: FONT_DISPLAY, fontSize: 20, fontWeight: 600, color: T.ink }}>
               {meta.label} <span className="tabnum" style={{ fontFamily: FONT_MONO, fontSize: 16, color: T.muted }}>N°{meta.prefix}-{String(doc.number).padStart(4, "0")}</span>
             </h1>
+            {doc.convertedFromId && (
+              <div style={{ fontSize: 11.5, color: T.muted, marginTop: 2 }}>
+                Généré depuis {DOC_META[doc.convertedFromType]?.label.toLowerCase()} N°{DOC_META[doc.convertedFromType]?.prefix}-{String(doc.convertedFromNumber).padStart(4, "0")}
+              </div>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {doc.type === "devis" && (
+            <button
+              onClick={() => {
+                if (doc.convertedToId) return;
+                if (confirm("Créer une facture à partir de ce devis, avec les mêmes articles et le même client ?")) {
+                  onConvert(doc, "facture");
+                }
+              }}
+              disabled={!!doc.convertedToId}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-medium"
+              style={{
+                background: doc.convertedToId ? T.border : T.peach,
+                color: doc.convertedToId ? T.muted : T.red,
+                cursor: doc.convertedToId ? "default" : "pointer",
+              }}
+            >
+              <ArrowRightCircle size={15} /> {doc.convertedToId ? "Déjà transformé en facture" : "Transformer en facture"}
+            </button>
+          )}
           <button onClick={() => onPreview(doc)} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm" style={{ border: `1px solid ${T.border}`, color: T.inkSoft }}>
             <Printer size={15} /> Aperçu
           </button>
