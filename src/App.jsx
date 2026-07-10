@@ -1479,7 +1479,26 @@ function PreviewModal({ doc, client, company, settings, onClose }) {
   const totals = computeTotals(doc);
   const contentRef = useRef(null);
   const [isSharing, setIsSharing] = useState(false);
+  const [isPrinting, setIsPrinting] = useState(false);
   const filename = `${meta.prefix}-${String(doc.number).padStart(4, "0")}.pdf`;
+
+  async function handlePrint() {
+    if (isPrinting) return;
+    setIsPrinting(true);
+    try {
+      const blob = await exportNodeToPdf(contentRef.current);
+      const url = URL.createObjectURL(blob);
+      const win = window.open(url, "_blank");
+      if (!win) {
+        // Le navigateur a bloqué l'ouverture d'un nouvel onglet : on télécharge à la place.
+        downloadBlob(blob, filename);
+      }
+    } catch (e) {
+      alert("Le PDF n'a pas pu être généré. Réessayez.");
+    } finally {
+      setIsPrinting(false);
+    }
+  }
 
   async function handleShare() {
     if (isSharing) return;
@@ -1496,7 +1515,7 @@ function PreviewModal({ doc, client, company, settings, onClose }) {
       }
     } catch (e) {
       if (e?.name !== "AbortError") {
-        alert("Le PDF n'a pas pu être généré ou partagé. Réessayez, ou utilisez Imprimer puis « Enregistrer en PDF ».");
+        alert("Le PDF n'a pas pu être généré ou partagé. Réessayez.");
       }
     } finally {
       setIsSharing(false);
@@ -1510,8 +1529,13 @@ function PreviewModal({ doc, client, company, settings, onClose }) {
         <div className="flex items-center justify-between px-6 py-3 no-print" style={{ borderBottom: `1px solid ${T.border}` }}>
           <span style={{ fontSize: 13, fontWeight: 600, color: T.ink }}>Aperçu du document</span>
           <div className="flex items-center gap-2">
-            <button onClick={() => window.print()} className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md" style={{ background: T.peach, color: T.red }}>
-              <Printer size={13} /> Imprimer
+            <button
+              onClick={handlePrint}
+              disabled={isPrinting}
+              className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md"
+              style={{ background: T.peach, color: T.red, opacity: isPrinting ? 0.7 : 1 }}
+            >
+              <Printer size={13} /> {isPrinting ? "Génération…" : "Imprimer"}
             </button>
             <button
               onClick={handleShare}
