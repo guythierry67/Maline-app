@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { getData, setData, subscribeToChanges } from "./lib/supabase";
+import html2canvas from "html2canvas";
+import jsPDF from "jspdf";
 import {
   FileText, Truck, ClipboardList, Undo2, Users, Package, Settings as SettingsIcon,
   Plus, ArrowLeft, ArrowRightCircle, Search, Trash2, X, Printer, Share2, Check, ChevronRight,
@@ -81,6 +83,42 @@ function computeTotals(doc) {
   const paid = doc.paymentStatus === "paid" ? totalTTC : (Number(doc.paidAmount) || 0);
   const remaining = Math.max(totalTTC - paid, 0);
   return { subtotal, discountAmount, totalHT, taxAmount, totalTTC, paid, remaining };
+}
+
+/** Convertit un noeud DOM (la mise en page A4 du document) en PDF, en gérant
+ * la pagination si le contenu dépasse une page A4. Retourne un Blob PDF. */
+async function exportNodeToPdf(node) {
+  if (!node) throw new Error("Élément introuvable pour l'export PDF");
+  const canvas = await html2canvas(node, { scale: 2, backgroundColor: "#ffffff", useCORS: true });
+  const imgData = canvas.toDataURL("image/png");
+  const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+  const imgWidth = pageWidth;
+  const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+  let heightLeft = imgHeight;
+  let position = 0;
+  pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+  heightLeft -= pageHeight;
+  while (heightLeft > 0) {
+    position = heightLeft - imgHeight;
+    pdf.addPage();
+    pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+    heightLeft -= pageHeight;
+  }
+  return pdf.output("blob");
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 const STORAGE_KEY = "maline-factu-data";
@@ -369,6 +407,16 @@ export default function App() {
         input:focus, textarea:focus, select:focus { outline: none; box-shadow: 0 0 0 2px ${T.peachBorder}; }
         @media print {
           .no-print { display: none !important; }
+          body * { visibility: hidden; }
+          .print-area, .print-area * { visibility: visible; }
+          .print-area {
+            position: absolute !important;
+            top: 0; left: 0;
+            width: 100% !important;
+            max-width: none !important;
+            box-shadow: none !important;
+            border-radius: 0 !important;
+          }
         }
       `}</style>
 
@@ -726,6 +774,10 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
   if (!doc) return null;
   const meta = DOC_META[doc.type];
   const totals = computeTotals(doc);
+  const exportRef = useRef(null);
+  const [isSharing, setIsSharing] = useState(false);
+  const client = clients.find((c) => c.id === doc.clientId);
+  const company = settings.companies.find((c) => c.id === doc.companyId);
 
   function updateItem(id, patch) {
     onChange({ items: doc.items.map((i) => (i.id === id ? { ...i, ...patch } : i)) });
@@ -738,6 +790,29 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
   }
   function removeItem(id) {
     onChange({ items: doc.items.filter((i) => i.id !== id) });
+  }
+
+  async function handleSendPdf() {
+    if (isSharing) return;
+    setIsSharing(true);
+    const filename = `${meta.prefix}-${String(doc.number).padStart(4, "0")}.pdf`;
+    try {
+      const blob = await exportNodeToPdf(exportRef.current);
+      const file = new File([blob], filename, { type: "application/pdf" });
+      const shareText = `${meta.label} ${meta.prefix}-${String(doc.number).padStart(4, "0")} — ${formatMoney(totals.totalTTC, settings.currency)}`;
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: filename, text: shareText });
+      } else {
+        downloadBlob(blob, filename);
+        alert("Le PDF a été téléchargé (le partage direct n'est pas disponible sur ce navigateur). Vous pouvez le joindre manuellement à votre email ou message.");
+      }
+    } catch (e) {
+      if (e?.name !== "AbortError") {
+        alert("Le PDF n'a pas pu être généré ou partagé. Réessayez, ou utilisez Aperçu puis Imprimer.");
+      }
+    } finally {
+      setIsSharing(false);
+    }
   }
 
   return (
@@ -782,20 +857,20 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
             <Printer size={15} /> Aperçu
           </button>
           <button
-            onClick={() => {
-              const client = clients.find((c) => c.id === doc.clientId);
-              const company = settings.companies.find((c) => c.id === doc.companyId);
-              const subject = encodeURIComponent(`${meta.label} ${meta.prefix}-${String(doc.number).padStart(4, "0")}`);
-              const body = encodeURIComponent(
-                `Bonjour ${client ? client.name : ""},\n\nVeuillez trouver ci-joint votre ${meta.label.toLowerCase()} n°${doc.number} d'un montant de ${formatMoney(totals.totalTTC, settings.currency)}.\n\nCordialement,\n${company?.name || ""}`
-              );
-              try { window.open(`mailto:${client?.email || ""}?subject=${subject}&body=${body}`, "_blank"); } catch (e) {}
-            }}
+            onClick={handleSendPdf}
+            disabled={isSharing}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-medium"
-            style={{ background: T.red, color: "#fff" }}
+            style={{ background: T.red, color: "#fff", opacity: isSharing ? 0.7 : 1 }}
           >
-            <Share2 size={15} /> Envoyer
+            <Share2 size={15} /> {isSharing ? "Génération…" : "Envoyer"}
           </button>
+        </div>
+      </div>
+
+      {/* Copie invisible utilisée uniquement pour générer le PDF exactement comme l'aperçu A4 */}
+      <div aria-hidden="true" style={{ position: "absolute", top: 0, left: -99999, width: 680 }}>
+        <div ref={exportRef} className="px-10 py-10" style={{ fontFamily: FONT_BODY, background: "#fff" }}>
+          <InvoiceDocument doc={doc} client={client} company={company} settings={settings} />
         </div>
       </div>
 
@@ -1330,9 +1405,104 @@ function PanelActions({ onSave, onDelete, disabled }) {
 }
 
 /* -------------------------------- PREVIEW MODAL ------------------------------------ */
+function InvoiceDocument({ doc, client, company, settings }) {
+  const meta = DOC_META[doc.type];
+  const totals = computeTotals(doc);
+  return (
+    <>
+      <div className="flex items-start justify-between mb-6 pb-6" style={{ borderBottom: `2px solid ${T.peachBorder}` }}>
+        <div>
+          {company?.logo ? (
+            <img src={company.logo} alt={company.name} style={{ height: 92, width: "auto", display: "block" }} />
+          ) : (
+            <div style={{ fontFamily: FONT_DISPLAY, fontSize: 26, fontWeight: 700, color: T.ink }}>{company?.name}</div>
+          )}
+          <div style={{ fontSize: 11, color: T.muted, marginTop: 12, lineHeight: 1.7 }}>
+            {company?.address && <div>{company.address}</div>}
+            {company?.phone && <div>{company.phone}</div>}
+            {company?.email && <div>{company.email}</div>}
+            {company?.website && <div>{company.website}</div>}
+          </div>
+        </div>
+        <div className="text-right">
+          <div style={{ fontFamily: FONT_DISPLAY, fontSize: 20, fontWeight: 700, color: T.red }}>{meta.label}</div>
+          <div className="tabnum" style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.inkSoft }}>N°{meta.prefix}-{String(doc.number).padStart(4, "0")}</div>
+          <div style={{ fontSize: 12, color: T.muted, marginTop: 4 }}>
+            Date : {formatDate(doc.date)}<br />
+            Échéance : {formatDate(doc.dueDate)}
+          </div>
+        </div>
+      </div>
+
+      <div className="mb-6 px-4 py-3 rounded-lg" style={{ background: T.peach }}>
+        <div style={{ fontSize: 10.5, fontWeight: 700, color: T.inkSoft, letterSpacing: 0.4 }}>FACTURÉ À</div>
+        <div style={{ fontSize: 14, fontWeight: 600, color: T.ink, marginTop: 2 }}>{client ? client.name : "—"}</div>
+        {client?.address && <div style={{ fontSize: 12, color: T.muted }}>{client.address}</div>}
+      </div>
+
+      {doc.title && (
+        <div className="mb-6">
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: T.muted, letterSpacing: 0.4 }}>PROJET</div>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: T.ink, marginTop: 2 }}>{doc.title}</div>
+        </div>
+      )}
+
+      <div className="rounded-lg overflow-hidden mb-6" style={{ border: `1px solid ${T.border}` }}>
+        <div className="grid px-4 py-2" style={{ gridTemplateColumns: "1fr 60px 100px 100px", background: T.paper, fontSize: 10.5, fontWeight: 700, color: T.muted }}>
+          <div>DÉSIGNATION</div><div className="text-right">QTÉ</div><div className="text-right">PRIX U.</div><div className="text-right">TOTAL</div>
+        </div>
+        {doc.items.map((item) => (
+          <div key={item.id} className="grid px-4 py-2.5" style={{ gridTemplateColumns: "1fr 60px 100px 100px", borderTop: `1px solid ${T.border}`, fontSize: 13 }}>
+            <div style={{ color: T.ink }}>{item.name || "—"}</div>
+            <div className="text-right tabnum" style={{ fontFamily: FONT_MONO, color: T.inkSoft }}>{item.qty}</div>
+            <div className="text-right tabnum" style={{ fontFamily: FONT_MONO, color: T.inkSoft }}>{formatMoney(item.unitPrice, settings.currency)}</div>
+            <div className="text-right tabnum font-semibold" style={{ fontFamily: FONT_MONO, color: T.ink }}>{formatMoney(item.qty * item.unitPrice, settings.currency)}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex justify-end mb-6">
+        <div className="w-64">
+          <TotalRow label="Total HT" value={formatMoney(totals.totalHT, settings.currency)} />
+          {doc.taxRate > 0 && <TotalRow label={`TVA (${doc.taxRate}%)`} value={formatMoney(totals.taxAmount, settings.currency)} />}
+          <TotalRow label="Total TTC" value={formatMoney(totals.totalTTC, settings.currency)} big />
+        </div>
+      </div>
+
+      {settings.terms && <div style={{ fontSize: 11, color: T.muted, borderTop: `1px solid ${T.border}`, paddingTop: 12, lineHeight: 1.6 }}>{settings.terms}</div>}
+    </>
+  );
+}
+
 function PreviewModal({ doc, client, company, settings, onClose }) {
   const meta = DOC_META[doc.type];
   const totals = computeTotals(doc);
+  const contentRef = useRef(null);
+  const [isSharing, setIsSharing] = useState(false);
+  const filename = `${meta.prefix}-${String(doc.number).padStart(4, "0")}.pdf`;
+
+  async function handleShare() {
+    if (isSharing) return;
+    setIsSharing(true);
+    try {
+      const blob = await exportNodeToPdf(contentRef.current);
+      const file = new File([blob], filename, { type: "application/pdf" });
+      const shareText = `${meta.label} ${meta.prefix}-${String(doc.number).padStart(4, "0")} — ${formatMoney(totals.totalTTC, settings.currency)}`;
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: filename, text: shareText });
+      } else {
+        downloadBlob(blob, filename);
+        alert("Le PDF a été téléchargé (le partage direct n'est pas disponible sur ce navigateur). Vous pouvez le joindre manuellement à votre email ou message.");
+      }
+    } catch (e) {
+      if (e?.name !== "AbortError") {
+        alert("Le PDF n'a pas pu être généré ou partagé. Réessayez, ou utilisez Imprimer puis « Enregistrer en PDF ».");
+      }
+    } finally {
+      setIsSharing(false);
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto py-10 px-4">
       <div className="absolute inset-0 no-print" style={{ background: "rgba(36,31,27,0.45)" }} onClick={onClose} />
@@ -1344,83 +1514,19 @@ function PreviewModal({ doc, client, company, settings, onClose }) {
               <Printer size={13} /> Imprimer
             </button>
             <button
-              onClick={() => {
-                const subject = encodeURIComponent(`${meta.label} ${meta.prefix}-${String(doc.number).padStart(4, "0")}`);
-                const body = encodeURIComponent(
-                  `Bonjour ${client ? client.name : ""},\n\nVeuillez trouver ci-joint votre ${meta.label.toLowerCase()} n°${doc.number} d'un montant de ${formatMoney(totals.totalTTC, settings.currency)}.\n\nCordialement,\n${company?.name || ""}`
-                );
-                try { window.open(`mailto:${client?.email || ""}?subject=${subject}&body=${body}`, "_blank"); } catch (e) {}
-              }}
+              onClick={handleShare}
+              disabled={isSharing}
               className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md"
-              style={{ background: T.red, color: "#fff" }}
+              style={{ background: T.red, color: "#fff", opacity: isSharing ? 0.7 : 1 }}
             >
-              <Share2 size={13} /> Partager
+              <Share2 size={13} /> {isSharing ? "Génération…" : "Partager"}
             </button>
             <button onClick={onClose} style={{ color: T.muted }}><X size={18} /></button>
           </div>
         </div>
 
-        <div className="px-10 py-10" style={{ fontFamily: FONT_BODY }}>
-          <div className="flex items-start justify-between mb-6 pb-6" style={{ borderBottom: `2px solid ${T.peachBorder}` }}>
-            <div>
-              {company?.logo ? (
-                <img src={company.logo} alt={company.name} style={{ height: 92, width: "auto", display: "block" }} />
-              ) : (
-                <div style={{ fontFamily: FONT_DISPLAY, fontSize: 26, fontWeight: 700, color: T.ink }}>{company?.name}</div>
-              )}
-              <div style={{ fontSize: 11, color: T.muted, marginTop: 12, lineHeight: 1.7 }}>
-                {company?.address && <div>{company.address}</div>}
-                {company?.phone && <div>{company.phone}</div>}
-                {company?.email && <div>{company.email}</div>}
-                {company?.website && <div>{company.website}</div>}
-              </div>
-            </div>
-            <div className="text-right">
-              <div style={{ fontFamily: FONT_DISPLAY, fontSize: 20, fontWeight: 700, color: T.red }}>{meta.label}</div>
-              <div className="tabnum" style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.inkSoft }}>N°{meta.prefix}-{String(doc.number).padStart(4, "0")}</div>
-              <div style={{ fontSize: 12, color: T.muted, marginTop: 4 }}>
-                Date : {formatDate(doc.date)}<br />
-                Échéance : {formatDate(doc.dueDate)}
-              </div>
-            </div>
-          </div>
-
-          <div className="mb-6 px-4 py-3 rounded-lg" style={{ background: T.peach }}>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: T.inkSoft, letterSpacing: 0.4 }}>FACTURÉ À</div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: T.ink, marginTop: 2 }}>{client ? client.name : "—"}</div>
-            {client?.address && <div style={{ fontSize: 12, color: T.muted }}>{client.address}</div>}
-          </div>
-
-          {doc.title && (
-            <div className="mb-6">
-              <div style={{ fontSize: 10.5, fontWeight: 700, color: T.muted, letterSpacing: 0.4 }}>PROJET</div>
-              <div style={{ fontSize: 13.5, fontWeight: 600, color: T.ink, marginTop: 2 }}>{doc.title}</div>
-            </div>
-          )}
-
-          <div className="rounded-lg overflow-hidden mb-6" style={{ border: `1px solid ${T.border}` }}>
-            <div className="grid px-4 py-2" style={{ gridTemplateColumns: "1fr 60px 100px 100px", background: T.paper, fontSize: 10.5, fontWeight: 700, color: T.muted }}>
-              <div>DÉSIGNATION</div><div className="text-right">QTÉ</div><div className="text-right">PRIX U.</div><div className="text-right">TOTAL</div>
-            </div>
-            {doc.items.map((item, idx) => (
-              <div key={item.id} className="grid px-4 py-2.5" style={{ gridTemplateColumns: "1fr 60px 100px 100px", borderTop: `1px solid ${T.border}`, fontSize: 13 }}>
-                <div style={{ color: T.ink }}>{item.name || "—"}</div>
-                <div className="text-right tabnum" style={{ fontFamily: FONT_MONO, color: T.inkSoft }}>{item.qty}</div>
-                <div className="text-right tabnum" style={{ fontFamily: FONT_MONO, color: T.inkSoft }}>{formatMoney(item.unitPrice, settings.currency)}</div>
-                <div className="text-right tabnum font-semibold" style={{ fontFamily: FONT_MONO, color: T.ink }}>{formatMoney(item.qty * item.unitPrice, settings.currency)}</div>
-              </div>
-            ))}
-          </div>
-
-          <div className="flex justify-end mb-6">
-            <div className="w-64">
-              <TotalRow label="Total HT" value={formatMoney(totals.totalHT, settings.currency)} />
-              {doc.taxRate > 0 && <TotalRow label={`TVA (${doc.taxRate}%)`} value={formatMoney(totals.taxAmount, settings.currency)} />}
-              <TotalRow label="Total TTC" value={formatMoney(totals.totalTTC, settings.currency)} big />
-            </div>
-          </div>
-
-          {settings.terms && <div style={{ fontSize: 11, color: T.muted, borderTop: `1px solid ${T.border}`, paddingTop: 12, lineHeight: 1.6 }}>{settings.terms}</div>}
+        <div className="px-10 py-10 print-area" ref={contentRef} style={{ fontFamily: FONT_BODY, background: "#fff" }}>
+          <InvoiceDocument doc={doc} client={client} company={company} settings={settings} />
         </div>
       </div>
     </div>
