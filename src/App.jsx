@@ -92,17 +92,86 @@ const seedData = () => ({
   ],
   articles: [],
   settings: {
-    companyName: "Maline Productions",
-    companyAddress: "B.P. 260, PK 10, Bangui, Centrafrique",
-    companyPhone: "+236 72 29 49 33 | +236 75 01 60 00",
-    companyEmail: "malineproductions@gmail.com",
-    companyWebsite: "www.malineproductions.com",
+    companies: [
+      {
+        id: "maline",
+        name: "Maline Productions",
+        address: "B.P. 260, PK 10, Bangui, Centrafrique",
+        phone: "+236 72 29 49 33 | +236 75 01 60 00",
+        email: "malineproductions@gmail.com",
+        website: "www.malineproductions.com",
+        logo: LOGO_DATA_URI,
+      },
+      {
+        id: "jowice",
+        name: "Jowice",
+        address: "",
+        phone: "",
+        email: "",
+        website: "",
+        logo: null,
+      },
+    ],
+    defaultCompanyId: "maline",
     currency: "XOF",
     taxRateDefault: 0,
     terms: "Merci de régler à réception de la facture.",
-    numbering: { facture: 1, devis: 1, commande: 1, avoir: 1 },
+    numbering: {
+      maline: { facture: 1, devis: 1, commande: 1, avoir: 1 },
+      jowice: { facture: 1, devis: 1, commande: 1, avoir: 1 },
+    },
   },
 });
+
+/** Complète une configuration existante (éventuellement ancienne, mono-entreprise)
+ * pour qu'elle corresponde toujours au nouveau format multi-entreprises. */
+function migrateSettings(rawSettings) {
+  const seed = seedData().settings;
+  let settings = { ...seed, ...(rawSettings || {}) };
+
+  if (!settings.companies || settings.companies.length === 0) {
+    settings.companies = [
+      {
+        id: "maline",
+        name: rawSettings?.companyName || "Maline Productions",
+        address: rawSettings?.companyAddress || "",
+        phone: rawSettings?.companyPhone || "",
+        email: rawSettings?.companyEmail || "",
+        website: rawSettings?.companyWebsite || "",
+        logo: LOGO_DATA_URI,
+      },
+    ];
+  }
+
+  if (!settings.defaultCompanyId) {
+    settings.defaultCompanyId = settings.companies[0].id;
+  }
+
+  const numberingLooksLegacy =
+    !settings.numbering || typeof settings.numbering.facture === "number";
+  if (numberingLooksLegacy) {
+    const legacy = settings.numbering || { facture: 1, devis: 1, commande: 1, avoir: 1 };
+    const fresh = {};
+    settings.companies.forEach((c, idx) => {
+      fresh[c.id] = idx === 0 ? { ...legacy } : { facture: 1, devis: 1, commande: 1, avoir: 1 };
+    });
+    settings.numbering = fresh;
+  } else {
+    // S'assure que chaque entreprise a bien une numérotation initialisée
+    settings.companies.forEach((c) => {
+      if (!settings.numbering[c.id]) {
+        settings.numbering[c.id] = { facture: 1, devis: 1, commande: 1, avoir: 1 };
+      }
+    });
+  }
+
+  return settings;
+}
+
+function migrateDocuments(docs, settings) {
+  const fallbackCompanyId = settings.companies[0].id;
+  return (docs || []).map((d) => (d.companyId ? d : { ...d, companyId: fallbackCompanyId }));
+}
 
 /* ---------------------------------- APP ------------------------------------ */
 export default function App() {
@@ -125,10 +194,11 @@ export default function App() {
       try {
         const value = await getData(STORAGE_KEY);
         const data = value || seedData();
-        setDocuments(data.documents || []);
+        const migratedSettings = migrateSettings(data.settings);
+        setDocuments(migrateDocuments(data.documents, migratedSettings));
         setClients(data.clients || []);
         setArticles(data.articles || []);
-        setSettings({ ...seedData().settings, ...(data.settings || {}) });
+        setSettings(migratedSettings);
       } catch (e) {
         const data = seedData();
         setDocuments(data.documents);
@@ -145,10 +215,11 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = subscribeToChanges(STORAGE_KEY, (value) => {
       isRemoteUpdate.current = true;
-      setDocuments(value.documents || []);
+      const migratedSettings = migrateSettings(value.settings);
+      setDocuments(migrateDocuments(value.documents, migratedSettings));
       setClients(value.clients || []);
       setArticles(value.articles || []);
-      setSettings({ ...seedData().settings, ...(value.settings || {}) });
+      setSettings(migratedSettings);
       setSaveState("synced");
     });
     return unsubscribe;
@@ -178,11 +249,13 @@ export default function App() {
   }, [clients]);
 
   function createDocument(docType) {
-    const num = settings.numbering[docType] || 1;
+    const companyId = settings.defaultCompanyId;
+    const num = settings.numbering[companyId]?.[docType] || 1;
     const today = new Date().toISOString().slice(0, 10);
     const newDoc = {
       id: genId(),
       type: docType,
+      companyId,
       number: num,
       date: today,
       dueDate: addDays(today, 30),
@@ -197,7 +270,10 @@ export default function App() {
       createdAt: Date.now(),
     };
     setDocuments((d) => [newDoc, ...d]);
-    setSettings((s) => ({ ...s, numbering: { ...s.numbering, [docType]: num + 1 } }));
+    setSettings((s) => ({
+      ...s,
+      numbering: { ...s.numbering, [companyId]: { ...s.numbering[companyId], [docType]: num + 1 } },
+    }));
     setScreen({ name: "editor", docType, id: newDoc.id });
   }
 
@@ -205,13 +281,25 @@ export default function App() {
     setDocuments((docs) => docs.map((d) => (d.id === id ? { ...d, ...patch } : d)));
   }
 
+  function changeDocumentCompany(doc, newCompanyId) {
+    if (doc.companyId === newCompanyId) return;
+    const num = settings.numbering[newCompanyId]?.[doc.type] || 1;
+    updateDocument(doc.id, { companyId: newCompanyId, number: num });
+    setSettings((s) => ({
+      ...s,
+      numbering: { ...s.numbering, [newCompanyId]: { ...s.numbering[newCompanyId], [doc.type]: num + 1 } },
+    }));
+  }
+
   function convertDocument(sourceDoc, targetType) {
-    const num = settings.numbering[targetType] || 1;
+    const companyId = sourceDoc.companyId;
+    const num = settings.numbering[companyId]?.[targetType] || 1;
     const today = new Date().toISOString().slice(0, 10);
     const newDoc = {
       ...sourceDoc,
       id: genId(),
       type: targetType,
+      companyId,
       number: num,
       date: today,
       dueDate: addDays(today, 30),
@@ -223,7 +311,10 @@ export default function App() {
       createdAt: Date.now(),
     };
     setDocuments((d) => [newDoc, ...d]);
-    setSettings((s) => ({ ...s, numbering: { ...s.numbering, [targetType]: num + 1 } }));
+    setSettings((s) => ({
+      ...s,
+      numbering: { ...s.numbering, [companyId]: { ...s.numbering[companyId], [targetType]: num + 1 } },
+    }));
     updateDocument(sourceDoc.id, { convertedToId: newDoc.id });
     setScreen({ name: "editor", docType: targetType, id: newDoc.id });
   }
@@ -288,13 +379,16 @@ export default function App() {
           else setScreen({ name });
         }}
         saveState={saveState}
+        companies={settings.companies}
+        activeCompanyId={settings.defaultCompanyId}
+        onSwitchCompany={(id) => setSettings((s) => ({ ...s, defaultCompanyId: id }))}
       />
 
       <div className="flex-1 h-full overflow-y-auto relative">
         {screen.name === "list" && (
           <ListScreen
             docType={screen.docType}
-            documents={documents.filter((d) => d.type === screen.docType)}
+            documents={documents.filter((d) => d.type === screen.docType && d.companyId === settings.defaultCompanyId)}
             clientsById={clientsById}
             settings={settings}
             onOpen={(id) => setScreen({ name: "editor", docType: screen.docType, id })}
@@ -318,6 +412,7 @@ export default function App() {
             onPreview={(doc) => setPreviewDoc(doc)}
             onAddClient={() => setEditingClient({})}
             onConvert={(sourceDoc, targetType) => convertDocument(sourceDoc, targetType)}
+            onChangeCompany={(doc, companyId) => changeDocumentCompany(doc, companyId)}
           />
         )}
 
@@ -367,6 +462,7 @@ export default function App() {
         <PreviewModal
           doc={previewDoc}
           client={clientsById[previewDoc.clientId]}
+          company={settings.companies.find((c) => c.id === previewDoc.companyId) || settings.companies[0]}
           settings={settings}
           onClose={() => setPreviewDoc(null)}
         />
@@ -376,7 +472,7 @@ export default function App() {
 }
 
 /* -------------------------------- SIDEBAR ----------------------------------- */
-function Sidebar({ active, onNavigate, saveState }) {
+function Sidebar({ active, onNavigate, saveState, companies, activeCompanyId, onSwitchCompany }) {
   const items = [
     { key: "facture", label: "Factures", icon: FileText },
     { key: "commande", label: "Commandes", icon: Truck },
@@ -395,6 +491,22 @@ function Sidebar({ active, onNavigate, saveState }) {
           ma<span style={{ color: "#D98BD0" }}>l</span>ine
         </div>
         <div style={{ fontSize: 11, color: T.sidebarText, marginTop: 2, letterSpacing: 0.4 }}>FACTURATION · HORS-LIGNE</div>
+      </div>
+
+      <div className="px-3 pb-3">
+        <div style={{ fontSize: 10.5, letterSpacing: 0.8, color: "#8A7D93", fontWeight: 600, padding: "0 8px 5px" }}>
+          ENTREPRISE ACTIVE
+        </div>
+        <select
+          value={activeCompanyId}
+          onChange={(e) => onSwitchCompany(e.target.value)}
+          className="w-full text-sm font-semibold px-3 py-2 rounded-lg"
+          style={{ background: T.sidebarActive, color: "#fff", border: "none" }}
+        >
+          {companies.map((c) => (
+            <option key={c.id} value={c.id}>{c.name || "(sans nom)"}</option>
+          ))}
+        </select>
       </div>
 
       <div className="px-3 flex-1 overflow-y-auto">
@@ -610,7 +722,7 @@ function TopBar({ title, left, right }) {
 }
 
 /* -------------------------------- DOC EDITOR -------------------------------- */
-function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBack, onPreview, onAddClient, onConvert }) {
+function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBack, onPreview, onAddClient, onConvert, onChangeCompany }) {
   if (!doc) return null;
   const meta = DOC_META[doc.type];
   const totals = computeTotals(doc);
@@ -672,9 +784,10 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
           <button
             onClick={() => {
               const client = clients.find((c) => c.id === doc.clientId);
+              const company = settings.companies.find((c) => c.id === doc.companyId);
               const subject = encodeURIComponent(`${meta.label} ${meta.prefix}-${String(doc.number).padStart(4, "0")}`);
               const body = encodeURIComponent(
-                `Bonjour ${client ? client.name : ""},\n\nVeuillez trouver ci-joint votre ${meta.label.toLowerCase()} n°${doc.number} d'un montant de ${formatMoney(totals.totalTTC, settings.currency)}.\n\nCordialement,\n${settings.companyName || ""}`
+                `Bonjour ${client ? client.name : ""},\n\nVeuillez trouver ci-joint votre ${meta.label.toLowerCase()} n°${doc.number} d'un montant de ${formatMoney(totals.totalTTC, settings.currency)}.\n\nCordialement,\n${company?.name || ""}`
               );
               try { window.open(`mailto:${client?.email || ""}?subject=${subject}&body=${body}`, "_blank"); } catch (e) {}
             }}
@@ -689,7 +802,18 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
       <div className="px-8 max-w-4xl">
         {/* header info card */}
         <div className="rounded-xl overflow-hidden mb-5" style={{ border: `1px solid ${T.peachBorder}` }}>
-          <div className="grid grid-cols-2" style={{ background: T.peach }}>
+          <div className="px-5 py-3" style={{ background: T.peach }}>
+            <div style={{ fontSize: 11, color: T.inkSoft, fontWeight: 600, marginBottom: 3 }}>ENTREPRISE</div>
+            <select
+              value={doc.companyId}
+              onChange={(e) => onChangeCompany(doc, e.target.value)}
+              className="bg-transparent text-sm font-semibold"
+              style={{ color: T.ink }}
+            >
+              {settings.companies.map((c) => <option key={c.id} value={c.id}>{c.name || "(sans nom)"}</option>)}
+            </select>
+          </div>
+          <div className="grid grid-cols-2" style={{ background: T.peach, borderTop: `1px solid ${T.peachBorder}` }}>
             <Field label="Date">
               <input type="date" value={doc.date} onChange={(e) => onChange({ date: e.target.value })} className="bg-transparent text-sm font-semibold" style={{ color: T.ink }} />
             </Field>
@@ -1010,16 +1134,101 @@ function ArticlePanel({ article, currency, onClose, onSave, onDelete }) {
 
 /* -------------------------------- SETTINGS ------------------------------------ */
 function SettingsScreen({ settings, onChange }) {
+  const [selectedId, setSelectedId] = useState(settings.companies[0]?.id);
+  const selected = settings.companies.find((c) => c.id === selectedId) || settings.companies[0];
+
+  function updateCompany(id, patch) {
+    onChange({ companies: settings.companies.map((c) => (c.id === id ? { ...c, ...patch } : c)) });
+  }
+
+  function addCompany() {
+    const id = genId();
+    const name = "Nouvelle entreprise";
+    onChange({
+      companies: [...settings.companies, { id, name, address: "", phone: "", email: "", website: "", logo: null }],
+      numbering: { ...settings.numbering, [id]: { facture: 1, devis: 1, commande: 1, avoir: 1 } },
+    });
+    setSelectedId(id);
+  }
+
+  function removeCompany(id) {
+    if (settings.companies.length <= 1) return;
+    if (!confirm("Supprimer cette entreprise ? Les documents déjà créés avec ce profil garderont leurs informations, mais ce profil ne sera plus proposé.")) return;
+    const remaining = settings.companies.filter((c) => c.id !== id);
+    const patch = { companies: remaining };
+    if (settings.defaultCompanyId === id) patch.defaultCompanyId = remaining[0].id;
+    onChange(patch);
+    setSelectedId(remaining[0].id);
+  }
+
+  function handleLogoUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => updateCompany(selected.id, { logo: reader.result });
+    reader.readAsDataURL(file);
+  }
+
   return (
     <div>
       <TopBar title="Paramètres" />
       <div className="px-8 pb-8 max-w-xl">
-        <SettingsGroup title="Entreprise">
-          <TextRow label="Nom" value={settings.companyName} onChange={(v) => onChange({ companyName: v })} />
-          <TextRow label="Adresse" value={settings.companyAddress} onChange={(v) => onChange({ companyAddress: v })} />
-          <TextRow label="Téléphone" value={settings.companyPhone} onChange={(v) => onChange({ companyPhone: v })} />
-          <TextRow label="Email" value={settings.companyEmail} onChange={(v) => onChange({ companyEmail: v })} />
-          <TextRow label="Site web" value={settings.companyWebsite} onChange={(v) => onChange({ companyWebsite: v })} />
+        <SettingsGroup title="Entreprises">
+          <div className="flex items-center gap-2 px-5 py-3.5 flex-wrap" style={{ borderBottom: `1px solid ${T.border}` }}>
+            {settings.companies.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => setSelectedId(c.id)}
+                className="text-xs font-semibold px-3 py-1.5 rounded-full"
+                style={{
+                  background: selected?.id === c.id ? T.red : T.peach,
+                  color: selected?.id === c.id ? "#fff" : T.red,
+                }}
+              >
+                {c.name || "(sans nom)"}
+              </button>
+            ))}
+            <button onClick={addCompany} className="flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-full" style={{ border: `1px dashed ${T.border}`, color: T.inkSoft }}>
+              <Plus size={13} /> Ajouter
+            </button>
+          </div>
+
+          {selected && (
+            <>
+              <div className="flex items-center gap-4 px-5 py-4" style={{ borderBottom: `1px solid ${T.border}` }}>
+                <div className="w-16 h-16 rounded-lg flex items-center justify-center shrink-0 overflow-hidden" style={{ background: T.peach }}>
+                  {selected.logo ? (
+                    <img src={selected.logo} alt={selected.name} style={{ maxWidth: "100%", maxHeight: "100%" }} />
+                  ) : (
+                    <Building2 size={22} color={T.red} />
+                  )}
+                </div>
+                <div className="flex-1">
+                  <label className="text-xs font-semibold px-3 py-1.5 rounded-md inline-block cursor-pointer" style={{ background: T.peach, color: T.red }}>
+                    {selected.logo ? "Changer le logo" : "Ajouter un logo"}
+                    <input type="file" accept="image/*" onChange={handleLogoUpload} className="hidden" />
+                  </label>
+                  {selected.logo && (
+                    <button onClick={() => updateCompany(selected.id, { logo: null })} className="text-xs font-medium px-3 py-1.5 ml-2" style={{ color: T.muted }}>
+                      Retirer
+                    </button>
+                  )}
+                </div>
+              </div>
+              <TextRow label="Nom" value={selected.name} onChange={(v) => updateCompany(selected.id, { name: v })} />
+              <TextRow label="Adresse" value={selected.address} onChange={(v) => updateCompany(selected.id, { address: v })} />
+              <TextRow label="Téléphone" value={selected.phone} onChange={(v) => updateCompany(selected.id, { phone: v })} />
+              <TextRow label="Email" value={selected.email} onChange={(v) => updateCompany(selected.id, { email: v })} />
+              <TextRow label="Site web" value={selected.website} onChange={(v) => updateCompany(selected.id, { website: v })} />
+              {settings.companies.length > 1 && (
+                <div className="px-5 py-3.5">
+                  <button onClick={() => removeCompany(selected.id)} className="flex items-center gap-1.5 text-xs font-medium" style={{ color: T.red }}>
+                    <Trash2 size={13} /> Supprimer cette entreprise
+                  </button>
+                </div>
+              )}
+            </>
+          )}
         </SettingsGroup>
 
         <SettingsGroup title="Facturation">
@@ -1045,7 +1254,7 @@ function SettingsScreen({ settings, onChange }) {
         </SettingsGroup>
 
         <div style={{ fontSize: 12, color: T.muted, marginTop: 8 }}>
-          Toutes vos données sont enregistrées uniquement sur cet appareil. Aucune connexion internet n'est nécessaire.
+          Toutes vos données sont synchronisées entre vos appareils via Supabase.
         </div>
       </div>
     </div>
@@ -1121,7 +1330,7 @@ function PanelActions({ onSave, onDelete, disabled }) {
 }
 
 /* -------------------------------- PREVIEW MODAL ------------------------------------ */
-function PreviewModal({ doc, client, settings, onClose }) {
+function PreviewModal({ doc, client, company, settings, onClose }) {
   const meta = DOC_META[doc.type];
   const totals = computeTotals(doc);
   return (
@@ -1138,7 +1347,7 @@ function PreviewModal({ doc, client, settings, onClose }) {
               onClick={() => {
                 const subject = encodeURIComponent(`${meta.label} ${meta.prefix}-${String(doc.number).padStart(4, "0")}`);
                 const body = encodeURIComponent(
-                  `Bonjour ${client ? client.name : ""},\n\nVeuillez trouver ci-joint votre ${meta.label.toLowerCase()} n°${doc.number} d'un montant de ${formatMoney(totals.totalTTC, settings.currency)}.\n\nCordialement,\n${settings.companyName || ""}`
+                  `Bonjour ${client ? client.name : ""},\n\nVeuillez trouver ci-joint votre ${meta.label.toLowerCase()} n°${doc.number} d'un montant de ${formatMoney(totals.totalTTC, settings.currency)}.\n\nCordialement,\n${company?.name || ""}`
                 );
                 try { window.open(`mailto:${client?.email || ""}?subject=${subject}&body=${body}`, "_blank"); } catch (e) {}
               }}
@@ -1154,12 +1363,16 @@ function PreviewModal({ doc, client, settings, onClose }) {
         <div className="px-10 py-10" style={{ fontFamily: FONT_BODY }}>
           <div className="flex items-start justify-between mb-6 pb-6" style={{ borderBottom: `2px solid ${T.peachBorder}` }}>
             <div>
-              <img src={LOGO_DATA_URI} alt={settings.companyName} style={{ height: 92, width: "auto", display: "block" }} />
+              {company?.logo ? (
+                <img src={company.logo} alt={company.name} style={{ height: 92, width: "auto", display: "block" }} />
+              ) : (
+                <div style={{ fontFamily: FONT_DISPLAY, fontSize: 26, fontWeight: 700, color: T.ink }}>{company?.name}</div>
+              )}
               <div style={{ fontSize: 11, color: T.muted, marginTop: 12, lineHeight: 1.7 }}>
-                {settings.companyAddress && <div>{settings.companyAddress}</div>}
-                {settings.companyPhone && <div>{settings.companyPhone}</div>}
-                {settings.companyEmail && <div>{settings.companyEmail}</div>}
-                {settings.companyWebsite && <div>{settings.companyWebsite}</div>}
+                {company?.address && <div>{company.address}</div>}
+                {company?.phone && <div>{company.phone}</div>}
+                {company?.email && <div>{company.email}</div>}
+                {company?.website && <div>{company.website}</div>}
               </div>
             </div>
             <div className="text-right">
