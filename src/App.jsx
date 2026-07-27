@@ -1469,7 +1469,18 @@ function InvoiceDocument({ doc, client, company, settings }) {
         </div>
       </div>
 
-      {settings.terms && <div style={{ fontSize: 11, color: T.muted, borderTop: `1px solid ${T.border}`, paddingTop: 12, lineHeight: 1.6 }}>{settings.terms}</div>}
+      {doc.notes && (
+        <div className="mb-4">
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: T.muted, letterSpacing: 0.4, marginBottom: 3 }}>NOTES</div>
+          <div style={{ fontSize: 11.5, color: T.inkSoft, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{doc.notes}</div>
+        </div>
+      )}
+
+      {settings.terms && (
+        <div style={{ fontSize: 11, color: T.muted, borderTop: `1px solid ${T.border}`, paddingTop: 12, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+          {settings.terms}
+        </div>
+      )}
     </>
   );
 }
