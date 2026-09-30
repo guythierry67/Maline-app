@@ -398,7 +398,7 @@ export default function App() {
   }
 
   return (
-    <div className="w-full h-screen flex overflow-hidden" style={{ fontFamily: FONT_BODY, background: T.paper }}>
+    <div className="w-full h-screen flex overflow-hidden" style={{ fontFamily: FONT_BODY, background: T.paper, paddingTop: "env(safe-area-inset-top)" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
         * { box-sizing: border-box; }
@@ -776,6 +776,7 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
   const totals = computeTotals(doc);
   const exportRef = useRef(null);
   const [isSharing, setIsSharing] = useState(false);
+  const [suggestFor, setSuggestFor] = useState(null); // id de la ligne dont les suggestions sont ouvertes
   const client = clients.find((c) => c.id === doc.clientId);
   const company = settings.companies.find((c) => c.id === doc.companyId);
 
@@ -851,6 +852,25 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
               }}
             >
               <ArrowRightCircle size={15} /> {doc.convertedToId ? "Déjà transformé en facture" : "Transformer en facture"}
+            </button>
+          )}
+          {doc.type === "facture" && (
+            <button
+              onClick={() => {
+                if (doc.convertedToId) return;
+                if (confirm("Créer un devis à partir de cette facture, avec les mêmes articles et le même client ?")) {
+                  onConvert(doc, "devis");
+                }
+              }}
+              disabled={!!doc.convertedToId}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-medium"
+              style={{
+                background: doc.convertedToId ? T.border : T.peach,
+                color: doc.convertedToId ? T.muted : T.red,
+                cursor: doc.convertedToId ? "default" : "pointer",
+              }}
+            >
+              <ArrowRightCircle size={15} /> {doc.convertedToId ? "Déjà transformé en devis" : "Transformer en devis"}
             </button>
           )}
           <button onClick={() => onPreview(doc)} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm" style={{ border: `1px solid ${T.border}`, color: T.inkSoft }}>
@@ -951,30 +971,15 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
         <div className="rounded-xl overflow-hidden mb-5" style={{ border: `1px solid ${T.border}`, background: T.card }}>
           <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: `1px solid ${T.border}` }}>
             <span style={{ fontSize: 13, fontWeight: 600, color: T.ink }}>Articles</span>
-            <div className="flex items-center gap-2">
-              {articles.length > 0 && (
-                <select
-                  onChange={(e) => {
-                    const art = articles.find((a) => a.id === e.target.value);
-                    if (art) addItem(art);
-                    e.target.value = "";
-                  }}
-                  defaultValue=""
-                  className="text-xs px-2 py-1.5 rounded-md"
-                  style={{ border: `1px solid ${T.border}`, color: T.inkSoft }}
-                >
-                  <option value="">Depuis le catalogue…</option>
-                  {articles.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
-              )}
-              <button onClick={() => addItem(null)} className="flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-md" style={{ background: T.peach, color: T.red }}>
-                <Plus size={13} /> Ligne
-              </button>
-            </div>
+            <button onClick={() => addItem(null)} className="flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-md" style={{ background: T.peach, color: T.red }}>
+              <Plus size={13} /> Ligne
+            </button>
           </div>
 
           {doc.items.length === 0 ? (
-            <div className="px-5 py-8 text-center text-sm" style={{ color: T.muted }}>Aucun article. Ajoutez une ligne pour commencer.</div>
+            <div className="px-5 py-8 text-center text-sm" style={{ color: T.muted }}>
+              Aucun article. Ajoutez une ligne pour commencer — tapez librement, ou choisissez une suggestion de votre catalogue si elle apparaît.
+            </div>
           ) : (
             <div>
               <div className="grid px-5 py-2" style={{ gridTemplateColumns: "1fr 70px 110px 110px 30px", fontSize: 10.5, fontWeight: 600, color: T.muted, letterSpacing: 0.4 }}>
@@ -984,19 +989,52 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
                 <div className="text-right">TOTAL</div>
                 <div />
               </div>
-              {doc.items.map((item, idx) => (
+              {doc.items.map((item, idx) => {
+                const query = (item.name || "").trim().toLowerCase();
+                const matches = query.length > 0
+                  ? articles.filter((a) => a.name.toLowerCase().includes(query) && a.name.toLowerCase() !== query).slice(0, 6)
+                  : [];
+                const showSuggestions = suggestFor === item.id && matches.length > 0;
+                return (
                 <div
                   key={item.id}
                   className="grid items-center px-5 py-2.5"
-                  style={{ gridTemplateColumns: "1fr 70px 110px 110px 30px", borderTop: `1px solid ${T.border}` }}
+                  style={{ gridTemplateColumns: "1fr 70px 110px 110px 30px", borderTop: `1px solid ${T.border}`, position: "relative" }}
                 >
-                  <input
-                    value={item.name}
-                    onChange={(e) => updateItem(item.id, { name: e.target.value })}
-                    placeholder="Nom de l'article"
-                    className="text-sm bg-transparent pr-2"
-                    style={{ color: T.ink }}
-                  />
+                  <div style={{ position: "relative" }}>
+                    <input
+                      value={item.name}
+                      onChange={(e) => updateItem(item.id, { name: e.target.value })}
+                      onFocus={() => setSuggestFor(item.id)}
+                      onBlur={() => setTimeout(() => setSuggestFor((cur) => (cur === item.id ? null : cur)), 150)}
+                      placeholder="Nom de l'article — saisie libre"
+                      className="text-sm bg-transparent pr-2 w-full"
+                      style={{ color: T.ink }}
+                    />
+                    {showSuggestions && (
+                      <div
+                        className="absolute left-0 right-0 mt-1 rounded-lg overflow-hidden z-20"
+                        style={{ top: "100%", background: T.card, border: `1px solid ${T.border}`, boxShadow: "0 8px 20px rgba(0,0,0,0.12)" }}
+                      >
+                        {matches.map((a) => (
+                          <button
+                            key={a.id}
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              updateItem(item.id, { name: a.name, unitPrice: a.unitPrice });
+                              setSuggestFor(null);
+                            }}
+                            className="w-full flex items-center justify-between px-3 py-2 text-left"
+                            style={{ fontSize: 13, color: T.ink, borderTop: `1px solid ${T.border}` }}
+                          >
+                            <span>{a.name}</span>
+                            <span className="tabnum" style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.muted }}>{formatMoney(a.unitPrice, settings.currency)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   <input
                     type="number"
                     value={item.qty}
@@ -1018,7 +1056,7 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
                     <X size={14} />
                   </button>
                 </div>
-              ))}
+              );})}
             </div>
           )}
         </div>
