@@ -777,6 +777,9 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
   const exportRef = useRef(null);
   const [isSharing, setIsSharing] = useState(false);
   const [suggestFor, setSuggestFor] = useState(null); // id de la ligne dont les suggestions sont ouvertes
+  const [showCatalog, setShowCatalog] = useState(false);
+  const [catQuery, setCatQuery] = useState("");
+  const norm = (v) => (v || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
   const client = clients.find((c) => c.id === doc.clientId);
   const company = settings.companies.find((c) => c.id === doc.companyId);
 
@@ -971,10 +974,59 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
         <div className="rounded-xl overflow-hidden mb-5" style={{ border: `1px solid ${T.border}`, background: T.card }}>
           <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: `1px solid ${T.border}` }}>
             <span style={{ fontSize: 13, fontWeight: 600, color: T.ink }}>Articles</span>
-            <button onClick={() => addItem(null)} className="flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-md" style={{ background: T.peach, color: T.red }}>
-              <Plus size={13} /> Ligne
-            </button>
+            <div className="flex items-center gap-2">
+              {articles.length > 0 && (
+                <button onClick={() => { setCatQuery(""); setShowCatalog(true); }} className="flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-md" style={{ background: T.red, color: "#fff" }}>
+                  <Package size={13} /> Catalogue
+                </button>
+              )}
+              <button onClick={() => addItem(null)} className="flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-md" style={{ background: T.peach, color: T.red }}>
+                <Plus size={13} /> Ligne
+              </button>
+            </div>
           </div>
+
+          {showCatalog && (
+            <div className="fixed inset-0 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.45)", zIndex: 60 }} onClick={() => setShowCatalog(false)}>
+              <div className="w-full flex flex-col rounded-t-2xl" style={{ background: T.card, maxWidth: 560, height: "82vh" }} onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: `1px solid ${T.border}` }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: T.ink }}>Catalogue ({articles.length})</div>
+                  <button onClick={() => setShowCatalog(false)} className="text-sm font-semibold px-3 py-1.5 rounded-md" style={{ background: T.peach, color: T.red }}>
+                    Terminer{doc.items.length > 0 ? ` (${doc.items.length})` : ""}
+                  </button>
+                </div>
+                <div className="px-5 py-3" style={{ borderBottom: `1px solid ${T.border}` }}>
+                  <input
+                    value={catQuery}
+                    onChange={(e) => setCatQuery(e.target.value)}
+                    placeholder="Rechercher un article…"
+                    className="w-full text-sm px-3 py-2 rounded-lg"
+                    style={{ border: `1px solid ${T.border}`, color: T.ink, background: "transparent" }}
+                  />
+                </div>
+                <div className="flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling: "touch" }}>
+                  {articles
+                    .filter((a) => norm(a.name).includes(norm(catQuery.trim())))
+                    .map((a) => (
+                      <button
+                        key={a.id}
+                        type="button"
+                        onClick={() => addItem(a)}
+                        className="w-full flex items-center justify-between gap-3 px-5 py-3 text-left"
+                        style={{ borderTop: `1px solid ${T.border}`, fontSize: 13.5, color: T.ink }}
+                      >
+                        <span className="flex-1">{a.name}</span>
+                        <span className="tabnum shrink-0" style={{ fontFamily: FONT_MONO, fontSize: 12.5, color: T.green, fontWeight: 600 }}>{formatMoney(a.unitPrice, settings.currency)}</span>
+                        <Plus size={15} color={T.red} />
+                      </button>
+                    ))}
+                  {articles.filter((a) => norm(a.name).includes(norm(catQuery.trim()))).length === 0 && (
+                    <div className="px-5 py-8 text-center text-sm" style={{ color: T.muted }}>Aucun article trouvé.</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {doc.items.length === 0 ? (
             <div className="px-5 py-8 text-center text-sm" style={{ color: T.muted }}>
@@ -991,9 +1043,10 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
               </div>
               {doc.items.map((item, idx) => {
                 const query = (item.name || "").trim().toLowerCase();
-                const matches = query.length > 0
-                  ? articles.filter((a) => a.name.toLowerCase().includes(query) && a.name.toLowerCase() !== query).slice(0, 6)
-                  : [];
+                const nq = norm(query);
+                const matches = nq.length > 0
+                  ? articles.filter((a) => norm(a.name).includes(nq) && norm(a.name) !== nq).slice(0, 12)
+                  : articles.slice(0, 8);
                 const showSuggestions = suggestFor === item.id && matches.length > 0;
                 return (
                 <div
@@ -1006,7 +1059,7 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
                       value={item.name}
                       onChange={(e) => updateItem(item.id, { name: e.target.value })}
                       onFocus={() => setSuggestFor(item.id)}
-                      onBlur={() => setTimeout(() => setSuggestFor((cur) => (cur === item.id ? null : cur)), 150)}
+                      onBlur={() => setTimeout(() => setSuggestFor((cur) => (cur === item.id ? null : cur)), 300)}
                       placeholder="Nom de l'article — saisie libre"
                       className="text-sm bg-transparent pr-2 w-full"
                       style={{ color: T.ink }}
@@ -1014,7 +1067,7 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
                     {showSuggestions && (
                       <div
                         className="absolute left-0 right-0 mt-1 rounded-lg overflow-hidden z-20"
-                        style={{ top: "100%", background: T.card, border: `1px solid ${T.border}`, boxShadow: "0 8px 20px rgba(0,0,0,0.12)" }}
+                        style={{ top: "100%", background: T.card, border: `1px solid ${T.border}`, boxShadow: "0 8px 20px rgba(0,0,0,0.12)", maxHeight: 260, overflowY: "auto" }}
                       >
                         {matches.map((a) => (
                           <button
