@@ -76,7 +76,9 @@ function addDays(iso, days) {
 
 function computeTotals(doc) {
   const subtotal = (doc.items || []).reduce((s, i) => s + (Number(i.qty) || 0) * (Number(i.unitPrice) || 0), 0);
-  const discountAmount = subtotal * ((doc.discountPercent || 0) / 100);
+  const discountAmount = doc.discountMode === "amount"
+    ? Math.min(Math.max(Number(doc.discountFixed) || 0, 0), subtotal)
+    : subtotal * ((doc.discountPercent || 0) / 100);
   const totalHT = subtotal - discountAmount;
   const taxAmount = totalHT * ((doc.taxRate || 0) / 100);
   const totalTTC = totalHT + taxAmount;
@@ -936,11 +938,8 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
               </button>
             </div>
           </div>
-          <div className="grid grid-cols-3" style={{ background: T.peach, borderTop: `1px solid ${T.peachBorder}` }}>
-            <Field label="Remise %">
-              <input type="number" min="0" max="100" value={doc.discountPercent} onChange={(e) => onChange({ discountPercent: Number(e.target.value) })} className="bg-transparent text-sm font-semibold w-full" style={{ color: T.ink }} />
-            </Field>
-            <Field label="TVA %" border="left">
+          <div className="grid grid-cols-2" style={{ background: T.peach, borderTop: `1px solid ${T.peachBorder}` }}>
+            <Field label="TVA %">
               <input type="number" min="0" max="100" value={doc.taxRate} onChange={(e) => onChange({ taxRate: Number(e.target.value) })} className="bg-transparent text-sm font-semibold w-full" style={{ color: T.ink }} />
             </Field>
             <Field label="Paiement" border="left">
@@ -1118,7 +1117,26 @@ function DocEditor({ doc, clients, articles, settings, onChange, onDelete, onBac
         <div className="flex justify-end mb-5">
           <div className="w-72 rounded-xl overflow-hidden" style={{ border: `1px solid ${T.border}`, background: T.card }}>
             <TotalRow label="Sous-total" value={formatMoney(totals.subtotal, settings.currency)} />
-            {doc.discountPercent > 0 && <TotalRow label={`Remise (${doc.discountPercent}%)`} value={`− ${formatMoney(totals.discountAmount, settings.currency)}`} />}
+            <div className="flex items-center justify-between gap-2" style={{ padding: "8px 16px", borderTop: `1px solid ${T.border}` }}>
+              <span style={{ fontSize: 12.5, fontWeight: 500, color: T.ink }}>Remise</span>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  min="0"
+                  inputMode="decimal"
+                  placeholder="0"
+                  value={(doc.discountMode === "amount" ? doc.discountFixed : doc.discountPercent) || ""}
+                  onChange={(e) => onChange(doc.discountMode === "amount" ? { discountFixed: Number(e.target.value) } : { discountPercent: Number(e.target.value) })}
+                  className="text-sm text-right tabnum rounded-md px-2 py-1"
+                  style={{ width: 90, fontFamily: FONT_MONO, border: `1px solid ${T.border}`, color: T.ink, background: "transparent" }}
+                />
+                <div className="flex rounded-md overflow-hidden" style={{ border: `1px solid ${T.border}` }}>
+                  <button type="button" onClick={() => onChange({ discountMode: "percent" })} className="text-xs font-semibold px-2 py-1" style={{ background: doc.discountMode !== "amount" ? T.red : "transparent", color: doc.discountMode !== "amount" ? "#fff" : T.inkSoft }}>%</button>
+                  <button type="button" onClick={() => onChange({ discountMode: "amount" })} className="text-xs font-semibold px-2 py-1" style={{ background: doc.discountMode === "amount" ? T.red : "transparent", color: doc.discountMode === "amount" ? "#fff" : T.inkSoft }}>{CURRENCIES[settings.currency]?.symbol || settings.currency}</button>
+                </div>
+              </div>
+            </div>
+            {totals.discountAmount > 0 && <TotalRow label={doc.discountMode === "amount" ? "Remise accordée" : `Remise (${doc.discountPercent}%)`} value={`− ${formatMoney(totals.discountAmount, settings.currency)}`} />}
             <TotalRow label="Total HT" value={formatMoney(totals.totalHT, settings.currency)} />
             {doc.taxRate > 0 && <TotalRow label={`TVA (${doc.taxRate}%)`} value={formatMoney(totals.taxAmount, settings.currency)} />}
             <TotalRow label="Total TTC" value={formatMoney(totals.totalTTC, settings.currency)} big />
@@ -1554,6 +1572,12 @@ function InvoiceDocument({ doc, client, company, settings }) {
 
       <div className="flex justify-end mb-6">
         <div className="w-64">
+          {totals.discountAmount > 0 && (
+            <>
+              <TotalRow label="Sous-total" value={formatMoney(totals.subtotal, settings.currency)} />
+              <TotalRow label={doc.discountMode === "amount" ? "Remise" : `Remise (${doc.discountPercent}%)`} value={`− ${formatMoney(totals.discountAmount, settings.currency)}`} />
+            </>
+          )}
           <TotalRow label="Total HT" value={formatMoney(totals.totalHT, settings.currency)} />
           {doc.taxRate > 0 && <TotalRow label={`TVA (${doc.taxRate}%)`} value={formatMoney(totals.taxAmount, settings.currency)} />}
           <TotalRow label="Total TTC" value={formatMoney(totals.totalTTC, settings.currency)} big />
